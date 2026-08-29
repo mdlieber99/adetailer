@@ -45,6 +45,29 @@ If you want to exclude objects in the background, try setting the min ratio to a
 
 Applied in this order: x, y offset → erosion/dilation → merge/invert.
 
+### Face filter (fork addition)
+
+Each ADetailer tab has a **Face filter** dropdown with three values: `Any`, `Female`, `Male`.
+
+- `Any` (default) is the original behaviour: every detected object is inpainted.
+- `Female` / `Male` classify each detected box with CLIP zero-shot (the crop is taken with a 25% margin and scored against an ensemble of three female and three male prompts) and only inpaint the faces whose label matches.
+
+Because each tab has its own prompt, setting tab 1 to `Female` and tab 2 to `Male` gives you a separate inpaint pass per gender, regardless of where each person stands in the frame.
+
+**Unknown faces.** A face whose winning probability is below the confidence threshold counts as *unknown*. Unknown faces are never silently dropped from the whole run:
+
+- if any other enabled tab has its face filter set to `Any`, unknown faces are skipped here, because that tab will inpaint them anyway;
+- otherwise they are handed to the lowest-index enabled tab that has a filter set, so exactly one tab keeps them.
+
+If the classifier cannot be loaded or fails, a warning is printed and the tab processes all detected faces as usual.
+
+Two settings live in `Settings -> ADetailer`:
+
+| Setting                                   | Default                        |                                                                        |
+| ----------------------------------------- | ------------------------------ | ---------------------------------------------------------------------- |
+| Face filter: minimum classifier confidence | `0.6`                          | Faces scoring below this count as unknown.                             |
+| Face filter: CLIP model name               | `openai/clip-vit-large-patch14` | Any Hugging Face CLIP id. Downloaded to the usual Hugging Face cache. |
+
 #### Inpainting
 
 Each option corresponds to a corresponding option on the inpaint tab. Therefore, please refer to the inpaint tab for usage details on how to use each option.

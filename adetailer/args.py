@@ -56,6 +56,7 @@ class ArgsList(UserList):
 class ADetailerArgs(BaseModel, extra=Extra.forbid):
     ad_model: str = "None"
     ad_model_classes: str = ""
+    ad_face_filter: Literal["Any", "Female", "Male"] = "Any"
     ad_tab_enable: bool = True
     ad_prompt: str = ""
     ad_negative_prompt: str = ""
@@ -129,6 +130,7 @@ class ADetailerArgs(BaseModel, extra=Extra.forbid):
         ppop = partial(self.ppop, p)
 
         ppop("ADetailer model classes")
+        ppop("ADetailer face filter", cond="Any")
         ppop("ADetailer prompt")
         ppop("ADetailer negative prompt")
         p.pop("ADetailer tab enable", None)  # always pop
@@ -218,6 +220,7 @@ class ADetailerArgs(BaseModel, extra=Extra.forbid):
 _all_args = [
     ("ad_model", "ADetailer model"),
     ("ad_model_classes", "ADetailer model classes"),
+    ("ad_face_filter", "ADetailer face filter"),
     ("ad_tab_enable", "ADetailer tab enable"),
     ("ad_prompt", "ADetailer prompt"),
     ("ad_negative_prompt", "ADetailer negative prompt"),

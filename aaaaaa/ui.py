@@ -214,6 +214,17 @@ def one_ui_group(n: int, is_img2img: bool, webui_info: WebuiInfo):
                 queue=False,
             )
 
+        with gr.Row():
+            w.ad_face_filter = gr.Dropdown(
+                label="Face filter" + suffix(n),
+                choices=["Any", "Female", "Male"],
+                value="Any",
+                type="value",
+                visible=True,
+                elem_id=eid("ad_face_filter"),
+                info="Only inpaint faces classified as this gender (CLIP zero-shot). Any = no filtering.",
+            )
+
     gr.HTML("<br>")
 
     with gr.Group():

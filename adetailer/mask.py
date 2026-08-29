@@ -229,6 +229,30 @@ def filter_by_ratio(
     return pred
 
 
+def filter_by_indices(pred: PredictOutput[T], keep: list[int]) -> PredictOutput[T]:
+    """
+    Keep only the detections at the given indices.
+
+    Parameters
+    ----------
+        pred: PredictOutput
+            the prediction to filter
+        keep: list[int]
+            indices of the detections to keep
+
+    Returns
+    -------
+        PredictOutput
+            the same object, with bboxes / masks / confidences filtered.
+            `preview` is left unchanged.
+    """
+    keep = [i for i in keep if 0 <= i < len(pred.bboxes)]
+    pred.bboxes = [pred.bboxes[i] for i in keep]
+    pred.masks = [pred.masks[i] for i in keep if i < len(pred.masks)]
+    pred.confidences = [pred.confidences[i] for i in keep if i < len(pred.confidences)]
+    return pred
+
+
 def filter_k_largest(pred: PredictOutput[T], k: int = 0) -> PredictOutput[T]:
     if not pred.bboxes or k == 0:
         return pred

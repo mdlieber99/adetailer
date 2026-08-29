@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-29
+
+- Added a per-tab **Face filter** dropdown (`Any` / `Female` / `Male`) (fork addition)
+- Each tab can now restrict inpainting to faces classified as a given gender, so two tabs with different prompts give one inpaint pass per gender, no matter where each person stands in the frame
+- Classification is CLIP zero-shot (`transformers.CLIPModel`): every detected box is cropped with a 25% margin and scored against an ensemble of three female and three male prompts; the per-group probabilities are summed and the winning group decides the label
+- Faces below the confidence threshold count as *unknown* and are never dropped from the whole run: if another enabled tab has no face filter, that tab handles them, otherwise they go to the lowest-index enabled tab that does have a filter
+- New settings: `Face filter: minimum classifier confidence` (default `0.6`) and `Face filter: CLIP model name (Hugging Face id)` (default `openai/clip-vit-large-patch14`)
+- If the classifier fails to load or run, a warning is printed and every detected face is processed as before
+
 ## 2026-02-05
 
 - v26.2.0

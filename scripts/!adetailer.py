@@ -50,7 +50,9 @@ from adetailer.args import (
     SkipImg2ImgOrig,
 )
 from adetailer.common import PredictOutput, ensure_pil_image, safe_mkdir
+from adetailer.gender import DEFAULT_CLIP_MODEL, classify_faces
 from adetailer.mask import (
+    filter_by_indices,
     filter_by_ratio,
     filter_k_by,
     has_intersection,
@@ -604,6 +606,127 @@ class AfterDetailerScript(scripts.Script):
         sortby_idx = BBOX_SORTBY.index(sortby)
         return sort_bboxes(pred, sortby_idx)
 
+    def get_face_filter_device(self) -> str:
+        "Reuse the ultralytics device, falling back to cuda when available."
+        device = self.ultralytics_device
+        if device:
+            return device
+
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return "cuda"
+        except Exception:
+            return "cpu"
+        return "cpu"
+
+    @staticmethod
+    def keep_unknown_faces(all_args: list[ADetailerArgs] | None, n: int) -> bool:
+        """
+        Should the `n`th tab keep faces the classifier is not confident about?
+
+        Unknown faces are never dropped from the whole run: if another enabled
+        tab has no face filter, that tab handles them; otherwise they go to the
+        lowest-index enabled tab that does have a filter.
+        """
+        if not all_args:
+            return False
+
+        enabled = [(i, a) for i, a in enumerate(all_args) if not a.need_skip()]
+
+        if any(i != n and a.ad_face_filter == "Any" for i, a in enabled):
+            return False
+
+        filtered = [i for i, a in enabled if a.ad_face_filter != "Any"]
+        return bool(filtered) and filtered[0] == n
+
+    def apply_face_filter(
+        self,
+        pred: PredictOutput,
+        image: Image.Image,
+        args: ADetailerArgs,
+        *,
+        n: int,
+        all_args: list[ADetailerArgs] | None,
+    ) -> PredictOutput:
+        min_confidence = float(opts.data.get("ad_face_filter_min_confidence", 0.6))
+        model_name: str = (
+            opts.data.get("ad_face_filter_model", DEFAULT_CLIP_MODEL)
+            or DEFAULT_CLIP_MODEL
+        )
+
+        results = classify_faces(
+            image,
+            pred.bboxes,
+            model_name=model_name,
+            device=self.get_face_filter_device(),
+        )
+
+        keep_unknown = self.keep_unknown_faces(all_args, n)
+        wanted = args.ad_face_filter.lower()
+
+        keep: list[int] = []
+        logs: list[str] = []
+        for j, (label, confidence) in enumerate(results):
+            if confidence < min_confidence:
+                decision = keep_unknown
+                text = f"face {j + 1} unknown ({label} {confidence:.2f})"
+            else:
+                decision = label.lower() == wanted
+                text = f"face {j + 1} {label} {confidence:.2f}"
+
+            if decision:
+                keep.append(j)
+            logs.append(f"{text} -> {'keep' if decision else 'skip'}")
+
+        print(
+            f"[-] ADetailer: face filter ({ordinal(n + 1)} tab, {args.ad_face_filter}): "
+            + ", ".join(logs)
+        )
+
+        return filter_by_indices(pred, keep)
+
+    def face_filter_step(  # noqa: PLR0913
+        self,
+        pred: PredictOutput,
+        image: Image.Image,
+        args: ADetailerArgs,
+        *,
+        n: int,
+        i: int,
+        all_args: list[ADetailerArgs] | None,
+    ) -> PredictOutput | None:
+        """
+        Apply this tab's face filter, if it has one.
+
+        Returns
+        -------
+            PredictOutput | None
+
+            The filtered prediction, or `None` when nothing is left to inpaint.
+            On any classifier error the prediction is returned unfiltered.
+        """
+        if args.ad_face_filter == "Any" or not pred.bboxes:
+            return pred
+
+        try:
+            pred = self.apply_face_filter(pred, image, args, n=n, all_args=all_args)
+        except Exception as e:
+            print(
+                f"[-] ADetailer: face filter failed ({e!r}); processing all detected faces.",
+                file=sys.stderr,
+            )
+            return pred
+
+        if not pred.bboxes:
+            print(
+                f"[-] ADetailer: no faces matched the face filter on image {i + 1} with {ordinal(n + 1)} settings."
+            )
+            return None
+
+        return pred
+
     def pred_preprocessing(self, p, pred: PredictOutput, args: ADetailerArgs):
         pred = filter_by_ratio(
             pred, low=args.ad_mask_min_ratio, high=args.ad_mask_max_ratio
@@ -801,8 +924,14 @@ class AfterDetailerScript(scripts.Script):
         extra_params = self.extra_params(arg_list)
         p.extra_generation_params.update(extra_params)
 
-    def _postprocess_image_inner(
-        self, p, pp: PPImage, args: ADetailerArgs, *, n: int = 0
+    def _postprocess_image_inner(  # noqa: C901
+        self,
+        p,
+        pp: PPImage,
+        args: ADetailerArgs,
+        *,
+        n: int = 0,
+        all_args: list[ADetailerArgs] | None = None,
     ) -> bool:
         """
         Returns
@@ -840,6 +969,13 @@ class AfterDetailerScript(scripts.Script):
                 f"[-] ADetailer: nothing detected on image {i + 1} with {ordinal(n + 1)} settings."
             )
             return False
+
+        filtered = self.face_filter_step(
+            pred, pp.image, args, n=n, i=i, all_args=all_args
+        )
+        if filtered is None:
+            return False
+        pred = filtered
 
         masks = self.pred_preprocessing(p, pred, args)
         shared.state.assign_current_image(pred.preview)
@@ -913,7 +1049,9 @@ class AfterDetailerScript(scripts.Script):
             for n, args in enumerate(arg_list):
                 if args.need_skip():
                     continue
-                is_processed |= self._postprocess_image_inner(p, pp, args, n=n)
+                is_processed |= self._postprocess_image_inner(
+                    p, pp, args, n=n, all_args=arg_list
+                )
 
         if is_processed and not is_skip_img2img(p):
             self.save_image(
@@ -1018,6 +1156,26 @@ def on_ui_settings():
             label="Sort bounding boxes by",
             component=gr.Radio,
             component_args={"choices": BBOX_SORTBY},
+            section=section,
+        ),
+    )
+
+    shared.opts.add_option(
+        "ad_face_filter_min_confidence",
+        shared.OptionInfo(
+            0.6,
+            "Face filter: minimum classifier confidence (faces below this count as unknown)",
+            gr.Slider,
+            {"minimum": 0.5, "maximum": 1.0, "step": 0.01},
+            section=section,
+        ),
+    )
+
+    shared.opts.add_option(
+        "ad_face_filter_model",
+        shared.OptionInfo(
+            DEFAULT_CLIP_MODEL,
+            "Face filter: CLIP model name (Hugging Face id)",
             section=section,
         ),
     )
