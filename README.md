@@ -47,17 +47,22 @@ Applied in this order: x, y offset → erosion/dilation → merge/invert.
 
 ### Face filter (fork addition)
 
-Each ADetailer tab has a **Face filter** dropdown with three values: `Any`, `Female`, `Male`.
+Each ADetailer tab has a **Face filter** dropdown: `Any`, `Female`, `Male`, `Female 1`, `Female 2`, `Female 3`, `Male 1`, `Male 2`, `Male 3`.
 
 - `Any` (default) is the original behaviour: every detected object is inpainted.
 - `Female` / `Male` classify each detected box with CLIP zero-shot (the crop is taken with a 25% margin and scored against an ensemble of three female and three male prompts) and only inpaint the faces whose label matches.
+- `Female 1` … `Male 3` additionally pick out a single face by position: `Female 2` is the **second** female face in the frame.
 
-Because each tab has its own prompt, setting tab 1 to `Female` and tab 2 to `Male` gives you a separate inpaint pass per gender, regardless of where each person stands in the frame.
+Because each tab has its own prompt, setting tab 1 to `Female` and tab 2 to `Male` gives you a separate inpaint pass per gender, regardless of where each person stands in the frame. With the ordinal choices you can go further and give each woman in a group shot her own prompt: tab 1 `Female 1`, tab 2 `Female 2`, and so on.
+
+**Ordering.** The ordinal counts faces in the bounding box sort order set in `Settings -> ADetailer -> bounding box sort` (`Position (left to right)` by default, so `Female 2` is the second woman from the left). Only faces of the tab's own gender are counted: in a row of woman, man, woman, the second woman is `Female 2`, not `Female 3`. The ordinal is applied right after the gender split and *before* the tab's mask ratio / top-k filters, so `Female 2` always means the second woman in the frame and never "the second-largest mask". If fewer faces of that gender were found than the ordinal asks for, the tab inpaints nothing, exactly as when no face matched at all.
 
 **Unknown faces.** A face whose winning probability is below the confidence threshold counts as *unknown*. Unknown faces are never silently dropped from the whole run:
 
 - if any other enabled tab has its face filter set to `Any`, unknown faces are skipped here, because that tab will inpaint them anyway;
 - otherwise they are handed to the lowest-index enabled tab that has a filter set, so exactly one tab keeps them.
+
+An unknown face routed to a tab this way counts as a member of that tab's gender for ordinal purposes, i.e. it takes up a place in the tab's `Female 1 / 2 / 3` numbering.
 
 If the classifier cannot be loaded or fails, a warning is printed and the tab processes all detected faces as usual.
 

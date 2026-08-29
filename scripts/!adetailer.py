@@ -50,11 +50,17 @@ from adetailer.args import (
     SkipImg2ImgOrig,
 )
 from adetailer.common import PredictOutput, ensure_pil_image, safe_mkdir
-from adetailer.gender import DEFAULT_CLIP_MODEL, classify_faces
+from adetailer.gender import (
+    DEFAULT_CLIP_MODEL,
+    classify_faces,
+    face_filter_decisions,
+    parse_face_filter,
+)
 from adetailer.mask import (
     filter_by_indices,
     filter_by_ratio,
     filter_k_by,
+    get_sort_key,
     has_intersection,
     is_all_black,
     mask_preprocess,
@@ -601,10 +607,18 @@ class AfterDetailerScript(scripts.Script):
             raise ValueError(msg)
         return model_mapping[name]
 
-    def sort_bboxes(self, pred: PredictOutput) -> PredictOutput:
+    @staticmethod
+    def bbox_sortby_index() -> int:
         sortby = opts.data.get("ad_bbox_sortby", BBOX_SORTBY[0])
-        sortby_idx = BBOX_SORTBY.index(sortby)
-        return sort_bboxes(pred, sortby_idx)
+        return BBOX_SORTBY.index(sortby)
+
+    def sort_bboxes(self, pred: PredictOutput) -> PredictOutput:
+        return sort_bboxes(pred, self.bbox_sortby_index())
+
+    def bbox_sort_key(self, pred: PredictOutput, image: Image.Image):
+        "The key `self.sort_bboxes` would order `pred` by, or None for no sorting."
+        preview = getattr(pred, "preview", None) or image
+        return get_sort_key(self.bbox_sortby_index(), preview.size)
 
     def get_face_filter_device(self) -> str:
         "Reuse the ultralytics device, falling back to cuda when available."
@@ -635,10 +649,12 @@ class AfterDetailerScript(scripts.Script):
 
         enabled = [(i, a) for i, a in enumerate(all_args) if not a.need_skip()]
 
-        if any(i != n and a.ad_face_filter == "Any" for i, a in enabled):
+        genders = {i: parse_face_filter(a.ad_face_filter)[0] for i, a in enabled}
+
+        if any(i != n and g == "any" for i, g in genders.items()):
             return False
 
-        filtered = [i for i, a in enabled if a.ad_face_filter != "Any"]
+        filtered = [i for i, g in genders.items() if g != "any"]
         return bool(filtered) and filtered[0] == n
 
     def apply_face_filter(
@@ -663,22 +679,20 @@ class AfterDetailerScript(scripts.Script):
             device=self.get_face_filter_device(),
         )
 
-        keep_unknown = self.keep_unknown_faces(all_args, n)
-        wanted = args.ad_face_filter.lower()
+        wanted, wanted_ordinal = parse_face_filter(args.ad_face_filter)
 
-        keep: list[int] = []
-        logs: list[str] = []
-        for j, (label, confidence) in enumerate(results):
-            if confidence < min_confidence:
-                decision = keep_unknown
-                text = f"face {j + 1} unknown ({label} {confidence:.2f})"
-            else:
-                decision = label.lower() == wanted
-                text = f"face {j + 1} {label} {confidence:.2f}"
-
-            if decision:
-                keep.append(j)
-            logs.append(f"{text} -> {'keep' if decision else 'skip'}")
+        keep, logs = face_filter_decisions(
+            results,
+            pred.bboxes,
+            wanted=wanted,
+            ordinal=wanted_ordinal,
+            min_confidence=min_confidence,
+            keep_unknown=self.keep_unknown_faces(all_args, n),
+            # the ordinal must rank faces exactly like the final mask sort does
+            sort_key=(
+                self.bbox_sort_key(pred, image) if wanted_ordinal is not None else None
+            ),
+        )
 
         print(
             f"[-] ADetailer: face filter ({ordinal(n + 1)} tab, {args.ad_face_filter}): "
@@ -707,7 +721,8 @@ class AfterDetailerScript(scripts.Script):
             The filtered prediction, or `None` when nothing is left to inpaint.
             On any classifier error the prediction is returned unfiltered.
         """
-        if args.ad_face_filter == "Any" or not pred.bboxes:
+        wanted, _ = parse_face_filter(args.ad_face_filter)
+        if wanted == "any" or not pred.bboxes:
             return pred
 
         try:

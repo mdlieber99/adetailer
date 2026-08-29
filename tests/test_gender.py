@@ -15,8 +15,10 @@ from adetailer.gender import (
     clear_cache,
     crop_with_margin,
     extract_embeds,
+    face_filter_decisions,
+    parse_face_filter,
 )
-from adetailer.mask import filter_by_indices
+from adetailer.mask import SortBy, filter_by_indices, get_sort_key
 
 MODEL_NAME = "fake/clip"
 DEVICE = "cpu"
@@ -277,3 +279,253 @@ def test_filter_by_indices_ignores_out_of_range():
     result = filter_by_indices(_fake_pred(2), [1, 5, -1])
     assert len(result.bboxes) == 1
     assert result.bboxes[0][0] == 1.0
+
+
+# --- parse_face_filter --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("Any", ("any", None)),
+        ("Female", ("female", None)),
+        ("Male", ("male", None)),
+        ("Female 1", ("female", 1)),
+        ("Female 2", ("female", 2)),
+        ("Female 3", ("female", 3)),
+        ("Male 1", ("male", 1)),
+        ("Male 2", ("male", 2)),
+        ("Male 3", ("male", 3)),
+    ],
+)
+def test_parse_face_filter_choices(value, expected):
+    assert parse_face_filter(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("  female   2  ", ("female", 2)),
+        ("FEMALE 2", ("female", 2)),
+        ("mAlE", ("male", None)),
+        ("\tAny\n", ("any", None)),
+    ],
+)
+def test_parse_face_filter_tolerates_whitespace_and_case(value, expected):
+    assert parse_face_filter(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", ("any", None)),
+        ("   ", ("any", None)),
+        (None, ("any", None)),
+        ("Nonbinary 2", ("any", None)),
+        ("Any 2", ("any", None)),  # an ordinal on "Any" is meaningless
+        ("Female two", ("female", None)),
+        ("Female 2 3", ("female", None)),
+        ("Female 0", ("female", None)),
+        ("Male -1", ("male", None)),
+    ],
+)
+def test_parse_face_filter_unrecognized_falls_back(value, expected):
+    assert parse_face_filter(value) == expected
+
+
+def test_parse_face_filter_covers_every_dropdown_choice():
+    from adetailer.args import FACE_FILTER_CHOICES
+
+    for choice in FACE_FILTER_CHOICES:
+        gender, ord_ = parse_face_filter(choice)
+        assert gender in ("any", "female", "male")
+        assert ord_ is None or 1 <= ord_ <= 3
+        # round-trips: the choice is the parse spelled back out
+        rebuilt = gender.capitalize() + (f" {ord_}" if ord_ else "")
+        assert rebuilt == choice
+
+
+# --- face_filter_decisions ----------------------------------------------
+
+LTR_KEY = get_sort_key(SortBy.LEFT_TO_RIGHT)
+
+
+def _bbox(x: float) -> list[float]:
+    return [x, 0.0, x + 10.0, 10.0]
+
+
+def _decide(results, bboxes, wanted, ordinal, *, keep_unknown=False):
+    return face_filter_decisions(
+        results,
+        bboxes,
+        wanted=wanted,
+        ordinal=ordinal,
+        min_confidence=0.6,
+        keep_unknown=keep_unknown,
+        sort_key=LTR_KEY,
+    )
+
+
+def test_face_filter_keeps_all_of_the_gender():
+    results = [("female", 0.97), ("male", 0.91), ("female", 0.95)]
+    bboxes = [_bbox(0), _bbox(20), _bbox(40)]
+
+    keep, _ = _decide(results, bboxes, "female", None)
+    assert keep == [0, 2]
+
+    keep, _ = _decide(results, bboxes, "male", None)
+    assert keep == [1]
+
+
+def test_face_filter_ordinal_picks_nth_in_sort_order():
+    results = [("female", 0.97), ("female", 0.95), ("male", 0.91)]
+    bboxes = [_bbox(0), _bbox(20), _bbox(40)]
+
+    assert _decide(results, bboxes, "female", 1)[0] == [0]
+    assert _decide(results, bboxes, "female", 2)[0] == [1]
+    assert _decide(results, bboxes, "female", 3)[0] == []
+
+
+def test_face_filter_ordinal_follows_bbox_sort_not_detection_order():
+    "Detection order is right-to-left; left-to-right sort must reverse it."
+    results = [("female", 0.97), ("female", 0.95)]
+    bboxes = [_bbox(100), _bbox(0)]
+
+    assert _decide(results, bboxes, "female", 1)[0] == [1]
+    assert _decide(results, bboxes, "female", 2)[0] == [0]
+
+
+def test_face_filter_ordinal_counts_only_same_gender():
+    "Male faces between the women must not consume a female ordinal."
+    results = [("female", 0.97), ("male", 0.93), ("female", 0.95), ("male", 0.90)]
+    bboxes = [_bbox(0), _bbox(20), _bbox(40), _bbox(60)]
+
+    assert _decide(results, bboxes, "female", 2)[0] == [2]
+    assert _decide(results, bboxes, "male", 2)[0] == [3]
+    assert _decide(results, bboxes, "male", 1)[0] == [1]
+
+
+def test_face_filter_ordinal_fewer_faces_than_ordinal_keeps_nothing():
+    results = [("female", 0.97)]
+    bboxes = [_bbox(0)]
+
+    assert _decide(results, bboxes, "female", 2)[0] == []
+    assert _decide(results, bboxes, "female", 3)[0] == []
+    assert _decide([], [], "female", 1)[0] == []
+
+
+def test_face_filter_ordinal_with_no_sort_uses_detection_order():
+    results = [("female", 0.97), ("female", 0.95)]
+    bboxes = [_bbox(100), _bbox(0)]
+
+    keep, _ = face_filter_decisions(
+        results,
+        bboxes,
+        wanted="female",
+        ordinal=1,
+        min_confidence=0.6,
+        keep_unknown=False,
+        sort_key=get_sort_key(SortBy.NONE),
+    )
+    assert keep == [0]
+
+
+def test_face_filter_ordinal_by_area_matches_sort_bboxes():
+    results = [("female", 0.97), ("female", 0.95)]
+    bboxes = [[0.0, 0.0, 10.0, 10.0], [50.0, 0.0, 90.0, 40.0]]
+
+    keep, _ = face_filter_decisions(
+        results,
+        bboxes,
+        wanted="female",
+        ordinal=1,
+        min_confidence=0.6,
+        keep_unknown=False,
+        sort_key=get_sort_key(SortBy.AREA),
+    )
+    # area sorts large to small, so the big box on the right ranks first
+    assert keep == [1]
+
+
+def test_face_filter_unknown_faces_count_toward_the_ordinal():
+    "An unknown face routed to this tab is the tab's first female."
+    results = [("male", 0.40), ("female", 0.95)]
+    bboxes = [_bbox(0), _bbox(20)]
+
+    assert _decide(results, bboxes, "female", 1, keep_unknown=True)[0] == [0]
+    assert _decide(results, bboxes, "female", 2, keep_unknown=True)[0] == [1]
+    # without the unknown routing the confident face is #1
+    assert _decide(results, bboxes, "female", 1, keep_unknown=False)[0] == [1]
+
+
+def test_face_filter_unknown_dropped_when_not_routed_here():
+    results = [("female", 0.40), ("female", 0.95)]
+    bboxes = [_bbox(0), _bbox(20)]
+
+    assert _decide(results, bboxes, "female", None, keep_unknown=False)[0] == [1]
+    assert _decide(results, bboxes, "female", None, keep_unknown=True)[0] == [0, 1]
+
+
+def test_face_filter_log_lines_show_the_ordinal_decision():
+    results = [("female", 0.97), ("female", 0.95), ("male", 0.91)]
+    bboxes = [_bbox(0), _bbox(20), _bbox(40)]
+
+    _, logs = _decide(results, bboxes, "female", 2)
+    assert logs == [
+        "face 1 female 0.97 -> skip (female #1)",
+        "face 2 female 0.95 -> keep (female #2)",
+        "face 3 male 0.91 -> skip",
+    ]
+
+
+def test_face_filter_log_lines_without_ordinal_have_no_note():
+    results = [("female", 0.97), ("male", 0.91), ("male", 0.40)]
+    bboxes = [_bbox(0), _bbox(20), _bbox(40)]
+
+    _, logs = _decide(results, bboxes, "female", None)
+    assert logs == [
+        "face 1 female 0.97 -> keep",
+        "face 2 male 0.91 -> skip",
+        "face 3 unknown (male 0.40) -> skip",
+    ]
+
+
+@pytest.mark.parametrize(
+    "order",
+    [SortBy.NONE, SortBy.LEFT_TO_RIGHT, SortBy.CENTER_TO_EDGE, SortBy.AREA],
+)
+def test_face_filter_ordinal_agrees_with_sort_bboxes(order):
+    "The ordinal must number faces exactly as sort_bboxes would order them."
+    from adetailer.mask import sort_bboxes
+
+    bboxes = [
+        [70.0, 10.0, 90.0, 30.0],
+        [10.0, 10.0, 50.0, 50.0],
+        [40.0, 60.0, 55.0, 75.0],
+    ]
+    results = [("female", 0.95)] * len(bboxes)
+    preview = Image.new("RGB", (100, 100))
+
+    pred = PredictOutput(
+        bboxes=[list(b) for b in bboxes],
+        masks=[Image.new("L", (10, 10), i) for i in range(len(bboxes))],
+        confidences=[0.9] * len(bboxes),
+        preview=preview,
+    )
+    expected = [b[0] for b in sort_bboxes(pred, order).bboxes]
+
+    got = []
+    for nth in (1, 2, 3):
+        keep, _ = face_filter_decisions(
+            results,
+            bboxes,
+            wanted="female",
+            ordinal=nth,
+            min_confidence=0.6,
+            keep_unknown=False,
+            sort_key=get_sort_key(order, preview.size),
+        )
+        assert len(keep) == 1
+        got.append(bboxes[keep[0]][0])
+
+    assert got == expected

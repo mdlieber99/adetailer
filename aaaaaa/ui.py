@@ -10,7 +10,7 @@ import gradio as gr
 
 from aaaaaa.conditional import InputAccordion
 from adetailer import ADETAILER, __version__
-from adetailer.args import ALL_ARGS, MASK_MERGE_INVERT
+from adetailer.args import ALL_ARGS, FACE_FILTER_CHOICES, MASK_MERGE_INVERT
 from controlnet_ext import controlnet_exists, controlnet_type, get_cn_models
 
 if controlnet_type == "forge":
@@ -217,12 +217,17 @@ def one_ui_group(n: int, is_img2img: bool, webui_info: WebuiInfo):
         with gr.Row():
             w.ad_face_filter = gr.Dropdown(
                 label="Face filter" + suffix(n),
-                choices=["Any", "Female", "Male"],
+                choices=list(FACE_FILTER_CHOICES),
                 value="Any",
                 type="value",
                 visible=True,
                 elem_id=eid("ad_face_filter"),
-                info="Only inpaint faces classified as this gender (CLIP zero-shot). Any = no filtering.",
+                info=(
+                    "Only inpaint faces classified as this gender (CLIP zero-shot)."
+                    " Any = no filtering."
+                    " Female 2 = second female face in bounding-box sort order"
+                    " (Settings → ADetailer → bounding box sort)."
+                ),
             )
 
     gr.HTML("<br>")

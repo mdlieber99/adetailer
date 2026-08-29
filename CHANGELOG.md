@@ -3,6 +3,7 @@
 ## 2026-08-29
 
 - Added a per-tab **Face filter** dropdown (`Any` / `Female` / `Male`) (fork addition)
+- Face filter also takes ordinal choices `Female 1-3` / `Male 1-3`: `Female 2` inpaints only the second female face, counted among that gender in the `Settings -> ADetailer -> bounding box sort` order and applied before the tab's ratio / top-k filters. An unknown face routed to the tab counts toward its numbering; if fewer faces of that gender are found than the ordinal asks for, the tab inpaints nothing
 - Each tab can now restrict inpainting to faces classified as a given gender, so two tabs with different prompts give one inpaint pass per gender, no matter where each person stands in the frame
 - Classification is CLIP zero-shot (`transformers.CLIPModel`): every detected box is cropped with a 25% margin and scored against an ensemble of three female and three male prompts; the per-group probabilities are summed and the winning group decides the label
 - Faces below the confidence threshold count as *unknown* and are never dropped from the whole run: if another enabled tab has no face filter, that tab handles them, otherwise they go to the lowest-index enabled tab that does have a filter

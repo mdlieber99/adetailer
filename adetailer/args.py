@@ -56,7 +56,17 @@ class ArgsList(UserList):
 class ADetailerArgs(BaseModel, extra=Extra.forbid):
     ad_model: str = "None"
     ad_model_classes: str = ""
-    ad_face_filter: Literal["Any", "Female", "Male"] = "Any"
+    ad_face_filter: Literal[
+        "Any",
+        "Female",
+        "Male",
+        "Female 1",
+        "Female 2",
+        "Female 3",
+        "Male 1",
+        "Male 2",
+        "Male 3",
+    ] = "Any"
     ad_tab_enable: bool = True
     ad_prompt: str = ""
     ad_negative_prompt: str = ""
@@ -274,6 +284,18 @@ BBOX_SORTBY = [
 ]
 
 MASK_MERGE_INVERT = ["None", "Merge", "Merge and Invert"]
+
+FACE_FILTER_CHOICES = [
+    "Any",
+    "Female",
+    "Male",
+    "Female 1",
+    "Female 2",
+    "Female 3",
+    "Male 1",
+    "Male 2",
+    "Male 3",
+]
 
 _script_default = (
     "dynamic_prompting",

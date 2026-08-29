@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from PIL import Image
@@ -25,8 +25,45 @@ ALL_PROMPTS = (*FEMALE_PROMPTS, *MALE_PROMPTS)
 
 FEMALE = "female"
 MALE = "male"
+ANY = "any"
 
 CROP_MARGIN = 0.25
+
+
+def parse_face_filter(value: str) -> tuple[str, int | None]:
+    """
+    Split a face filter choice into its gender and its optional ordinal.
+
+    "Female 2" -> ("female", 2), "Male" -> ("male", None), "Any" -> ("any", None).
+    Casing and extra whitespace are ignored; anything unrecognized is treated
+    as "any", i.e. no filtering.
+
+    Parameters
+    ----------
+        value: str
+            one of the `Face filter` dropdown choices
+
+    Returns
+    -------
+        tuple[str, int | None]
+            (gender, 1-based ordinal or None)
+    """
+    parts = str(value or "").strip().lower().split()
+    if not parts:
+        return (ANY, None)
+
+    gender, rest = parts[0], parts[1:]
+    if gender not in (ANY, FEMALE, MALE):
+        return (ANY, None)
+
+    if gender == ANY or len(rest) != 1:
+        return (gender, None)
+
+    ordinal = rest[0]
+    if ordinal.isdecimal() and int(ordinal) > 0:
+        return (gender, int(ordinal))
+
+    return (gender, None)
 
 
 @dataclass
@@ -42,6 +79,95 @@ class ClipBundle:
 
 _model_cache: dict[tuple[str, str], ClipBundle] = {}
 _cache_lock = threading.Lock()
+
+
+def face_filter_decisions(  # noqa: PLR0913
+    results: list[tuple[str, float]],
+    bboxes: list[list[float]],
+    *,
+    wanted: str,
+    ordinal: int | None,
+    min_confidence: float,
+    keep_unknown: bool,
+    sort_key: Callable[[list[float]], Any] | None,
+) -> tuple[list[int], list[str]]:
+    """
+    Decide which classified faces the tab keeps, and describe every decision.
+
+    Faces whose winning probability is below `min_confidence` count as
+    *unknown* and are kept only when `keep_unknown` is set; unknown faces kept
+    this way count as members of `wanted` for ordinal purposes.
+
+    When `ordinal` is given, the faces of the wanted gender are ranked with
+    `sort_key` -- the very key `adetailer.mask.sort_bboxes` would use -- and
+    only the `ordinal`-th (1-based) one is kept. Fewer faces than the ordinal
+    means nothing is kept.
+
+    Parameters
+    ----------
+        results: list[tuple[str, float]]
+            per-bbox (label, probability), as `classify_faces` returns
+        bboxes: list[list[float]]
+            the bboxes the results belong to, in detection order
+        wanted: str
+            "female" or "male"
+        ordinal: int | None
+            1-based ordinal within `wanted`, or None to keep them all
+        min_confidence: float
+            below this a face counts as unknown
+        keep_unknown: bool
+            whether this tab is the one handling unknown faces
+        sort_key: Callable | None
+            key for a single bbox, or None when the sort order is "None"
+
+    Returns
+    -------
+        tuple[list[int], list[str]]
+            indices to keep, and one human-readable log entry per face
+    """
+    # candidates: the faces belonging to this tab's gender
+    candidates: list[int] = []
+    texts: list[str] = []
+    matches: list[bool] = []
+    for j, (label, confidence) in enumerate(results):
+        if confidence < min_confidence:
+            matched = keep_unknown
+            text = f"face {j + 1} unknown ({label} {confidence:.2f})"
+        else:
+            matched = label.lower() == wanted
+            text = f"face {j + 1} {label} {confidence:.2f}"
+
+        texts.append(text)
+        matches.append(matched)
+        if matched:
+            candidates.append(j)
+
+    # rank the candidates the way the final masks will be sorted, so
+    # "Female 2" is the second woman in bounding-box sort order
+    ranks: dict[int, int] = {}
+    if ordinal is not None and candidates:
+        order = (
+            list(candidates)
+            if sort_key is None
+            else sorted(candidates, key=lambda i: sort_key(bboxes[i]))
+        )
+        ranks = {j: rank for rank, j in enumerate(order, start=1)}
+
+    keep: list[int] = []
+    logs: list[str] = []
+    for j, matched in enumerate(matches):
+        decision = matched
+        note = ""
+        if matched and ordinal is not None:
+            rank = ranks[j]
+            note = f" ({wanted} #{rank})"
+            decision = rank == ordinal
+
+        if decision:
+            keep.append(j)
+        logs.append(f"{texts[j]} -> {'keep' if decision else 'skip'}{note}")
+
+    return keep, logs
 
 
 def crop_with_margin(

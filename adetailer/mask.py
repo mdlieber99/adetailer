@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import IntEnum
 from functools import partial, reduce
 from math import dist
-from typing import Any, TypeVar
+from typing import Any, Callable, TypeVar
 
 import cv2
 import numpy as np
@@ -183,22 +183,55 @@ def _key_area(bbox: list[T]) -> T:
     return -bbox_area(bbox)
 
 
+def get_sort_key(
+    order: int | SortBy = SortBy.NONE, image_size: tuple[int, int] | None = None
+) -> Callable[[list[T]], float] | None:
+    """
+    The bbox sort key `sort_bboxes` uses for `order`.
+
+    Factored out so that anything needing the same ordering (e.g. the ordinal
+    face filter) is guaranteed to sort exactly like `sort_bboxes` does.
+
+    Parameters
+    ----------
+        order: int | SortBy
+            the sort order, an index into `adetailer.args.BBOX_SORTBY`
+        image_size: tuple[int, int] | None
+            (width, height) of the image, required by `SortBy.CENTER_TO_EDGE`
+
+    Returns
+    -------
+        Callable[[list[T]], float] | None
+            a key function taking a bbox, or `None` for `SortBy.NONE`
+    """
+    if order == SortBy.NONE:
+        return None
+
+    if order == SortBy.LEFT_TO_RIGHT:
+        return _key_left_to_right
+
+    if order == SortBy.CENTER_TO_EDGE:
+        if image_size is None:
+            msg = "image_size is required for SortBy.CENTER_TO_EDGE"
+            raise ValueError(msg)
+        width, height = image_size
+        return partial(_key_center_to_edge, center=(width / 2, height / 2))
+
+    if order == SortBy.AREA:
+        return _key_area
+
+    raise RuntimeError
+
+
 def sort_bboxes(
     pred: PredictOutput[T], order: int | SortBy = SortBy.NONE
 ) -> PredictOutput[T]:
     if order == SortBy.NONE or len(pred.bboxes) <= 1:
         return pred
 
-    if order == SortBy.LEFT_TO_RIGHT:
-        key = _key_left_to_right
-    elif order == SortBy.CENTER_TO_EDGE:
-        width, height = pred.preview.size
-        center = (width / 2, height / 2)
-        key = partial(_key_center_to_edge, center=center)
-    elif order == SortBy.AREA:
-        key = _key_area
-    else:
-        raise RuntimeError
+    key = get_sort_key(order, pred.preview.size)
+    if key is None:
+        return pred
 
     items = len(pred.bboxes)
     idx = sorted(range(items), key=lambda i: key(pred.bboxes[i]))
