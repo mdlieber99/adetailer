@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from functools import partial
+from functools import lru_cache, partial
 
 import cv2
 import numpy as np
@@ -8,6 +8,17 @@ from PIL import Image, ImageDraw
 
 from adetailer import PredictOutput
 from adetailer.common import create_bbox_from_mask, create_mask_from_bbox
+
+
+@lru_cache(maxsize=1)
+def has_legacy_solutions() -> bool:
+    """Whether the `mp.solutions` API exists (mediapipe < 0.10.30)."""
+    try:
+        import mediapipe as mp
+
+        return bool(mp.solutions.face_detection and mp.solutions.face_mesh)
+    except Exception:
+        return False
 
 
 def mediapipe_predict(
@@ -32,6 +43,11 @@ def mediapipe_predict(
 def mediapipe_face_detection(
     model_type: int, image: Image.Image, confidence: float = 0.3
 ) -> PredictOutput[float]:
+    if not has_legacy_solutions():
+        from adetailer import mediapipe_tasks
+
+        return mediapipe_tasks.mediapipe_face_detection(model_type, image, confidence)
+
     import mediapipe as mp
 
     img_width, img_height = image.size
@@ -78,6 +94,11 @@ def mediapipe_face_detection(
 def mediapipe_face_mesh(
     image: Image.Image, confidence: float = 0.3
 ) -> PredictOutput[int]:
+    if not has_legacy_solutions():
+        from adetailer import mediapipe_tasks
+
+        return mediapipe_tasks.mediapipe_face_mesh(image, confidence)
+
     import mediapipe as mp
 
     mp_face_mesh = mp.solutions.face_mesh
@@ -129,6 +150,11 @@ def mediapipe_face_mesh(
 def mediapipe_face_mesh_eyes_only(
     image: Image.Image, confidence: float = 0.3
 ) -> PredictOutput[int]:
+    if not has_legacy_solutions():
+        from adetailer import mediapipe_tasks
+
+        return mediapipe_tasks.mediapipe_face_mesh_eyes_only(image, confidence)
+
     import mediapipe as mp
 
     mp_face_mesh = mp.solutions.face_mesh
